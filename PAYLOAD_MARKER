@@ -1,1 +1,3 @@
 marker file proving a foreign repository was checked out by the privileged workflow
+
+# TOCTOU: payload pushed AFTER the maintainer approved this PR
