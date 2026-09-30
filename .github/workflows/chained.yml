@@ -1,0 +1,76 @@
+# Mirrors gemini-cli chained_e2e.yml -- PRIVILEGED (workflow_run), holds secrets.
+name: 'Chained Consumer'
+on:
+  workflow_run:
+    workflows: ['Trigger Chained']
+    types: ['completed']
+permissions:
+  contents: read
+jobs:
+  download_repo_name:
+    runs-on: ubuntu-latest
+    outputs:
+      repo_name: '${{ steps.out.outputs.repo_name }}'
+      head_sha:  '${{ steps.out.outputs.head_sha }}'
+    steps:
+      - name: 'PROBE 1: did workflow_run fire at all?'
+        run: |
+          echo "event_name        = ${{ github.event_name }}"
+          echo "upstream event    = ${{ github.event.workflow_run.event }}"
+          echo "upstream head_repo= ${{ github.event.workflow_run.head_repository.full_name }}"
+          echo "upstream run_id   = ${{ github.event.workflow_run.id }}"
+      - name: 'PROBE 2: are secrets available in this workflow_run context?'
+        env:
+          TEST_SECRET: '${{ secrets.TEST_SECRET }}'
+        run: |
+          if [ -n "$TEST_SECRET" ]; then echo "SECRET PRESENT (len=${#TEST_SECRET})"; else echo "SECRET EMPTY"; fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: 'repo_name'
+          run-id: '${{ github.event.workflow_run.id }}'
+          github-token: '${{ secrets.GITHUB_TOKEN }}'
+          path: '${{ runner.temp }}/artifacts'
+      - id: 'out'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('fs'), path=require('path');
+            const temp='${{ runner.temp }}/artifacts';
+            const rp=path.join(temp,'repo_name');
+            if (fs.existsSync(rp)) { core.setOutput('repo_name', String(fs.readFileSync(rp)).trim()); }
+            const sp=path.join(temp,'head_sha');
+            if (fs.existsSync(sp)) { core.setOutput('head_sha', String(fs.readFileSync(sp)).trim()); }
+
+  execute:
+    needs: download_repo_name
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'PROBE 3: what did the artifact steer us to?'
+        run: |
+          echo "repository = ${{ needs.download_repo_name.outputs.repo_name }}"
+          echo "ref        = ${{ needs.download_repo_name.outputs.head_sha }}"
+
+      - name: 'PROBE 4: does actions/checkout honour an artifact-derived repository?'
+        uses: actions/checkout@v4
+        with:
+          repository: '${{ needs.download_repo_name.outputs.repo_name }}'
+          ref: '${{ needs.download_repo_name.outputs.head_sha }}'
+          persist-credentials: false
+
+      - run: |
+          echo "--- what actually got checked out ---"
+          git log --oneline -1 || true
+          ls -la
+          test -f PAYLOAD_MARKER && echo "PAYLOAD_MARKER PRESENT -> foreign repo was checked out"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 'PROBE 5: npm ci runs foreign lifecycle scripts'
+        run: npm ci
+
+      - name: 'PROBE 6: foreign npm script with the secret in env'
+        env:
+          TEST_SECRET: '${{ secrets.TEST_SECRET }}'
+        run: npm run test:integration:sandbox:none
